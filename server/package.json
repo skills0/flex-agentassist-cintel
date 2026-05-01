@@ -1,0 +1,16 @@
+{
+  "name": "cintel-v3-demo-server",
+  "type": "module",
+  "scripts": {
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "body-parser": "^1.20.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "openai": "^4.77.3",
+    "twilio": "^5.3.2",
+    "ws": "^8.18.0"
+  }
+}

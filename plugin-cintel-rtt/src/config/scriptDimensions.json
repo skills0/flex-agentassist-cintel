@@ -1,0 +1,26 @@
+[
+  {
+    "key": "greeting",
+    "label": "Greeting",
+    "description": "Agent greets customer, states company name, and introduces themselves",
+    "completed": false
+  },
+  {
+    "key": "identity_verification",
+    "label": "Identity Verification",
+    "description": "Agent verifies customer identity (last 4 digits of account)",
+    "completed": false
+  },
+  {
+    "key": "resolution_steps",
+    "label": "Resolution Steps",
+    "description": "Agent explains what they will do to resolve the issue",
+    "completed": false
+  },
+  {
+    "key": "issue_resolution",
+    "label": "Issue Resolution",
+    "description": "Agent satisfactorily resolves the customer issue",
+    "completed": false
+  }
+]
