@@ -140,3 +140,8 @@ vite.config.ts.timestamp-*
 
 # Claude AI files
 .claude
+
+# misc
+.DS_Store
+*.pem
+meld-compare.sh
