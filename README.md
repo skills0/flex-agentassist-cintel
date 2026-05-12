@@ -202,7 +202,7 @@ You can also perform the following steps using the Twilio Console UI if you pref
 
 ```bash
 curl --location 'https://intelligence.twilio.com/v3/ControlPlane/Configurations' \
---H 'Content-Type: application/json' \
+-H 'Content-Type: application/json' \
 -u "$TWILIO_ACCOUNT_SID:$TWILIO_AUTH_TOKEN" \
 --data '{
     "displayName": "flex_cintel_plugin_demo",
@@ -228,7 +228,7 @@ Replace the configuration id in the curl below with your id from above.
 
 ```bash
 curl --location --request PUT 'https://intelligence.twilio.com/v3/ControlPlane/Configurations/intelligence_configuration_xxx' \
---H 'Content-Type: application/json' \
+-H 'Content-Type: application/json' \
 -u "$TWILIO_ACCOUNT_SID:$TWILIO_AUTH_TOKEN" \
 --data '{
     "displayName": "flex_cintel_plugin_demo",

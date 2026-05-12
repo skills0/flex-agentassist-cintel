@@ -26,30 +26,19 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // Twilio configuration
-const {
-  TWILIO_FLEX_PHONE_NUMBER,
-  OPENAI_API_KEY,
-  SERVER_URL,
-  AI_CUSTOMER_PROMPT,
-} = process.env;
-
-// OpenAI configuration
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-});
+const { TWILIO_FLEX_PHONE_NUMBER, SERVER_URL } = process.env;
 
 // Store active call mappings (in production, use a database)
 const activeCalls = new Map(); // calls in Voice channel in Flex, keyed by CallSid
-const activeInteractions = new Map(); // interactions in Messaging channels in Flex, keyed by ConversationSid
 const activeConversations = new Map(); // Conversation Orchestrator conversations, keyed by conversationId
 
 // Store live conversation data (transcript + CINTEL results)
 // Key: sessionId or callSid
 const liveConversationData = new Map();
+const tempConversationData = new Map(); // Temporary storage for conversations without callSid mapping
 
 // Map conversationId (from CINTEL v3) to callSid
 const conversationIdToCallSid = new Map();
-const conversationIdToConversationSid = new Map(); // For non-voice channels
 
 // Store SSE clients for streaming updates
 const sseClients = new Map();
@@ -58,73 +47,14 @@ const sseClients = new Map();
 // Key: conversationId, Value: Map of participantId -> { id, name, type, channel }
 const conversationParticipants = new Map();
 
-const conversationv1Messages = new Map(); // Key: conversationSid, Value: Map of a participant message -> { message, address, channel }
-
-/**
- * Helper function to find and map a conversationId to a conversationSid
- * by matching author and message text in conversationv1Messages
- * @param {string} conversationId - The Conversation Orchestrator conversation ID
- * @param {object} author - Author object with address property
- * @param {string} messageText - The message text to match
- * @returns {string|null} - The conversationSid if found, null otherwise
- */
-function findOrCreateConversationMapping(conversationId, author, messageText) {
-  // Check if mapping already exists
-  let existingConversationSid =
-    conversationIdToConversationSid.get(conversationId);
-
-  if (existingConversationSid) {
-    return existingConversationSid;
-  }
-
-  // Search for matching author AND message text in conversationv1Messages
-  for (const [conversationSid, messages] of conversationv1Messages) {
-    if (messages.has(author.address)) {
-      console.log(
-        'Found matching author in conversationv1Messages:',
-        author.address,
-        conversationSid,
-      );
-      const storedMessage = messages.get(author.address);
-      // Match both author AND message text
-      if (storedMessage.message === messageText) {
-        console.log(
-          `✅ Found matching v1 message for author ${author.address} with matching text in conversation ${conversationSid}:`,
-          storedMessage,
-        );
-
-        // Create mapping from conversationId to conversationSid
-        conversationIdToConversationSid.set(conversationId, conversationSid);
-        console.log(
-          `✅ Auto-created mapping: ${conversationId} -> ${conversationSid}`,
-        );
-        return conversationSid;
-      } else {
-        console.log(
-          `⚠️  Author ${author.address} found but message text doesn't match. Expected: "${messageText}", Got: "${storedMessage.message}"`,
-        );
-      }
-    }
-  }
-
-  console.log(
-    `⚠️  No matching v1 message found for author ${author.address} with text "${messageText}" in conversationId ${conversationId}`,
-  );
-  return null;
-}
-
 /**
  * POST /webhook/status
  * Webhook for call status updates
  */
 app.post('/webhook/status', (req, res) => {
-  const { CallSid, CallStatus, From, To, ConversationSid, ConversationStatus } =
-    req.body;
+  const { CallSid, CallStatus, From, To, ConversationStatus } = req.body;
 
   console.log(`Call status update: ${CallSid} - ${CallStatus}`);
-  console.log(
-    `Conversation status update: ${ConversationSid} - ${ConversationStatus}`,
-  );
   console.log(`From: ${From}, To: ${To}`);
 
   // Update call status in memory
@@ -167,20 +97,6 @@ app.get('/api/call/:callSid', (req, res) => {
 });
 
 /**
- * GET /api/conversation/:conversationSid
- * Get status of a specific conversation
- */
-app.get('/api/conversation/:conversationSid', (req, res) => {
-  const { conversationSid } = req.params;
-
-  if (activeConversations.has(conversationSid)) {
-    res.json(activeConversations.get(conversationSid));
-  } else {
-    res.status(404).json({ error: 'Conversation not found' });
-  }
-});
-
-/**
  * GET /health
  * Health check endpoint
  */
@@ -190,7 +106,6 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     activeCalls: activeCalls.size,
     activeConversations: activeConversations.size,
-    activeInteractions: activeInteractions.size,
   });
 });
 
@@ -262,57 +177,6 @@ app.get('/api/stream/:sessionId', (req, res) => {
   });
 });
 
-app.post('/webhook/conversation-v1-event', (req, res) => {
-  // Handle Conversation API v1 event webhook
-  console.log(
-    'Flex Conversation Service event webhook received:',
-    JSON.stringify(req.body, null, 2),
-  );
-
-  const event = req.body;
-
-  if (event) {
-    // Handle onMessageAdded event
-    // this is only here to do the initial mapping of Conversation Orchestrator conversation id to Flex ConversationSid for non-voice channels
-    if (event.EventType === 'onMessageAdded') {
-      const { ConversationSid, Body, Author, Source } = event;
-
-      // Check if this ConversationSid is already mapped - if so, skip processing
-      const alreadyMapped = Array.from(
-        conversationIdToConversationSid.values(),
-      ).includes(ConversationSid);
-      if (alreadyMapped) {
-        console.log(
-          `ℹ️  ConversationSid ${ConversationSid} is already mapped, skipping message storage`,
-        );
-        return res.sendStatus(200);
-      }
-
-      // Initialize participants map for this conversation if needed
-      if (!conversationv1Messages.has(ConversationSid)) {
-        conversationv1Messages.set(ConversationSid, new Map());
-        console.log(
-          `👥 Created new messages map for v1 conversation: ${ConversationSid}`,
-        );
-      }
-
-      // Add message to the map (keyed by Author)
-      const messages = conversationv1Messages.get(ConversationSid);
-      messages.set(Author, {
-        message: Body,
-        channel: Source,
-      });
-
-      console.log(
-        `💬 Added message from ${Author} to conversation ${ConversationSid}:`,
-        Body,
-      );
-    }
-  }
-
-  res.sendStatus(200);
-});
-
 app.post('/webhook/cor-event', (req, res) => {
   // Handle Conversation Orchestrator event webhook
 
@@ -382,140 +246,47 @@ app.post('/webhook/cor-event', (req, res) => {
         'Conversation Orchestrator COMMUNICATION_CREATED event webhook received:',
         JSON.stringify(req.body, null, 2),
       );
-      const { conversationId, author, content } = event.data;
-      if (content && content.type === 'TRANSCRIPTION') {
-      }
-      if (content && content.type === 'TEXT') {
-        // Find or create mapping between conversationId and conversationSid
-        const existingConversationSid = findOrCreateConversationMapping(
-          conversationId,
-          author,
-          content.text,
-        );
-
-        if (existingConversationSid) {
-          if (!liveConversationData.has(existingConversationSid)) {
-            liveConversationData.set(existingConversationSid, {
-              transcript: [],
-              operatorResults: [],
-              startTime: new Date(),
-              conversationId: existingConversationSid,
-              accountId: event.AccountSid,
-              intelligenceConfiguration: null,
-            });
-            console.log(
-              `📝 Created new conversation data for key: ${existingConversationSid}`,
-            );
-          } else {
-            console.log(
-              `📝 Found existing conversation data for key: ${existingConversationSid}`,
-            );
-          }
-
-          const conversationData = liveConversationData.get(
-            existingConversationSid,
+      const { conversationId, author, content, channelId } = event.data;
+      let callSid = conversationIdToCallSid.get(conversationId);
+      // get CallSID
+      if (author?.channel === 'VOICE') {
+        if (!callSid) {
+          callSid = channelId; // In voice interactions, channelId is the callSid
+          conversationIdToCallSid.set(conversationId, callSid);
+          console.log(
+            `🔗 Mapped conversationId ${conversationId} to callSid ${callSid} from COMMUNICATION_CREATED event`,
           );
-          if (conversationData) {
-            const speaker =
-              author.address === TWILIO_FLEX_PHONE_NUMBER
-                ? 'agent'
-                : 'customer';
-            const transcriptEntry = {
-              timestamp: new Date().toISOString(),
-              speaker: speaker,
-              text: content.text || '',
-            };
-            conversationData.transcript.push(transcriptEntry);
-            console.log(
-              `Added ${speaker} transcript entry for conversation ${id}:`,
-              transcriptEntry,
-            );
+        }
+      }
+      if (content && content.type === 'TRANSCRIPTION') {
+        const speaker =
+          author.address === TWILIO_FLEX_PHONE_NUMBER ? 'agent' : 'customer';
+        const transcriptEntry = {
+          timestamp: new Date().toISOString(),
+          speaker: speaker,
+          text: content.text || '',
+        };
 
-            // Broadcast to SSE clients
-            broadcastToClients(existingConversationSid, {
-              type: 'transcript',
-              data: transcriptEntry,
-            });
-          } else {
-            console.warn(
-              `No conversation data found for conversation ${id} when adding transcript`,
-            );
-          }
+        if (!callSid) {
+          console.warn(
+            `No callSid mapping found for conversationId ${conversationId}, dropping transcript entry`,
+          );
+        } else {
+          ensureConversationData(callSid);
+          const conversationData = liveConversationData.get(callSid);
+          conversationData.transcript.push(transcriptEntry);
+          console.log(
+            `Added ${speaker} transcript entry for call ${callSid}:`,
+            transcriptEntry,
+          );
+          broadcastToClients(callSid, {
+            type: 'transcript',
+            data: transcriptEntry,
+          });
         }
       }
     }
-
-    // Handle CONVERSATION_UPDATED event
-    if (event.eventType === 'CONVERSATION_UPDATED') {
-      const { id, status } = event.data;
-      if (status === 'CLOSED') {
-        // clean up maps
-        const existingConversationSid =
-          conversationIdToConversationSid.get(conversationId);
-        if (existingConversationSid) {
-          conversationv1Messages.delete(existingConversationSid);
-        }
-        conversationIdToConversationSid.delete(id);
-        liveConversationData.delete(id);
-      }
-    }
   }
-  res.sendStatus(200);
-});
-
-app.post('/webhook/transcript', (req, res) => {
-  console.log(
-    'Transcript webhook received:',
-    JSON.stringify(req.body, null, 2),
-  );
-
-  const event = req.body;
-
-  if (event) {
-    const callSid = event.CallSid;
-    // Initialize conversation data if needed
-    if (!liveConversationData.has(callSid)) {
-      liveConversationData.set(callSid, {
-        transcript: [],
-        operatorResults: [],
-        startTime: new Date(),
-        conversationId: callSid,
-        accountId: event.AccountSid,
-        intelligenceConfiguration: null,
-      });
-      console.log(`📝 Created new conversation data for key: ${callSid}`);
-    } else {
-      console.log(`📝 Found existing conversation data for key: ${callSid}`);
-    }
-
-    const TranscriptionData = JSON.parse(event.TranscriptionData || '{}');
-    const speaker = event.Track === 'inbound_track' ? 'customer' : 'agent';
-
-    const conversationData = liveConversationData.get(callSid);
-    if (conversationData) {
-      const transcriptEntry = {
-        timestamp: new Date().toISOString(),
-        speaker: speaker,
-        text: TranscriptionData.transcript || '',
-      };
-      conversationData.transcript.push(transcriptEntry);
-      console.log(
-        `Added ${speaker} transcript entry for call ${callSid}:`,
-        transcriptEntry,
-      );
-
-      // Broadcast to SSE clients
-      broadcastToClients(callSid, {
-        type: 'transcript',
-        data: transcriptEntry,
-      });
-    } else {
-      console.warn(
-        `No conversation data found for callSid ${callSid} when adding transcript`,
-      );
-    }
-  }
-
   res.sendStatus(200);
 });
 
@@ -559,74 +330,8 @@ app.post('/webhook/cintel-action', (req, res) => {
 
     // Try to find the associated callSid
     let callSid = conversationIdToCallSid.get(conversationId);
-    let conversationSid = conversationIdToConversationSid.get(conversationId);
 
-    console.log(`\n🔗 Checking conversationId mapping:`);
-    console.log(`   - conversationId: ${conversationId}`);
-    console.log(`   - Mapped callSid: ${callSid || 'NOT FOUND'}`);
-    console.log(
-      `   - Mapped conversationSid: ${conversationSid || 'NOT FOUND'}`,
-    );
-    console.log(
-      `   - Available mappings:`,
-      Array.from(conversationIdToCallSid.entries()),
-    );
-    console.log(
-      `   - Available conversation data keys:`,
-      Array.from(liveConversationData.keys()),
-    );
-
-    const haveFlexMapping = callSid || conversationSid;
-
-    // Create session ID for SSE clients based on channel type
-    let sessionId = null;
-    if (haveFlexMapping) {
-      // Voice channel uses callSid, digital channels use conversationSid
-      sessionId = callSid || conversationSid;
-      console.log(
-        `📡 Session ID for SSE: ${sessionId} (${callSid ? 'voice' : 'digital'} channel)`,
-      );
-    }
-
-    // IMPORTANT: callSid is ONLY available in the referenceIds field of CINTEL v3 webhooks
-    // It is NOT available in the ConversationRelay WebSocket setup message
-    // We must extract it from the referenceIds array to link conversationId to callSid
-    if (!haveFlexMapping && operatorResults && operatorResults.length > 0) {
-      console.log(`\n🔍 Attempting to extract identifier from webhook data...`);
-
-      // Check referenceIds for callSid (starts with "CA")
-      // Use the LAST callSid in the list if multiple exist
-      for (const opResult of operatorResults) {
-        if (opResult.referenceIds && Array.isArray(opResult.referenceIds)) {
-          const callSids = opResult.referenceIds.filter((ref) =>
-            ref.startsWith('CA'),
-          );
-          if (callSids.length > 0) {
-            callSid = callSids[callSids.length - 1]; // Take the last one
-            console.log(
-              `✅ Found callSid in referenceIds: ${callSid}${callSids.length > 1 ? ` (${callSids.length} found, using last)` : ''}`,
-            );
-            // Create the mapping for future webhooks
-            conversationIdToCallSid.set(conversationId, callSid);
-            console.log(
-              `✅ Auto-created mapping: ${conversationId} -> ${callSid}`,
-            );
-            break;
-          } else {
-            if (opResult.referenceIds.length > 0) {
-              const smsSids = opResult.referenceIds.filter((ref) =>
-                ref.startsWith('SM'),
-              );
-              if (smsSids.length > 0) {
-                console.log(
-                  `ℹ️  Found SMS SID(s) in referenceIds, but no callSid: ${smsSids.join(', ')}`,
-                );
-              }
-            }
-          }
-        }
-      }
-    }
+    const haveFlexMapping = callSid;
 
     if (!haveFlexMapping) {
       console.warn(
@@ -635,97 +340,17 @@ app.post('/webhook/cintel-action', (req, res) => {
       console.warn(
         `⚠️  Without mapping, operator results won't appear in the UI!`,
       );
-    } else {
-      console.log(
-        `✅ Using identifier: ${callSid} or ${conversationSid} for this conversation`,
-      );
     }
 
     // Use callSid if available, otherwise use conversationId as the key
-    const dataKey = callSid || conversationSid || conversationId;
+    const dataKey = callSid || conversationId;
     console.log(`   - Using data key: ${dataKey}`);
 
-    // Initialize conversation data if needed
-    if (!liveConversationData.has(dataKey)) {
-      liveConversationData.set(dataKey, {
-        transcript: [],
-        operatorResults: [],
-        startTime: new Date(),
-        conversationId,
-        accountId,
-        intelligenceConfiguration,
-      });
-      console.log(`📝 Created new conversation data for key: ${dataKey}`);
-    } else {
-      console.log(`📝 Found existing conversation data for key: ${dataKey}`);
-    }
-
-    // If we just found a callSid mapping and there's data under conversationId, migrate it
-    if (
-      callSid &&
-      dataKey === callSid &&
-      liveConversationData.has(conversationId) &&
-      conversationId !== callSid
-    ) {
-      console.log(`\n🔄 Migrating data from conversationId to callSid...`);
-      const oldData = liveConversationData.get(conversationId);
-      const newData = liveConversationData.get(callSid);
-
-      // Merge operator results
-      if (oldData.operatorResults && oldData.operatorResults.length > 0) {
-        console.log(
-          `   - Migrating ${oldData.operatorResults.length} operator results`,
-        );
-        newData.operatorResults = [
-          ...newData.operatorResults,
-          ...oldData.operatorResults,
-        ];
-
-        // Update metadata
-        newData.conversationId = conversationId;
-        newData.accountId = accountId;
-        newData.intelligenceConfiguration = intelligenceConfiguration;
-
-        // Delete old data
-        liveConversationData.delete(conversationId);
-        console.log(`✅ Migration complete. Deleted old conversationId key.`);
-      }
-    }
-
-    //TODO: probably can optimize this pattern to be channel-agnostic
-    // If we just found a conversationSid mapping and there's data under conversationId, migrate it
-    if (
-      conversationSid &&
-      dataKey === conversationSid &&
-      liveConversationData.has(conversationId) &&
-      conversationId !== conversationSid
-    ) {
-      console.log(
-        `\n🔄 Migrating data from conversationId to conversationSid...`,
-      );
-      const oldData = liveConversationData.get(conversationId);
-      const newData = liveConversationData.get(conversationSid);
-
-      // Merge operator results
-      if (oldData.operatorResults && oldData.operatorResults.length > 0) {
-        console.log(
-          `   - Migrating ${oldData.operatorResults.length} operator results`,
-        );
-        newData.operatorResults = [
-          ...newData.operatorResults,
-          ...oldData.operatorResults,
-        ];
-      }
-
-      // Update metadata
-      newData.conversationId = conversationId;
-      newData.accountId = accountId;
-      newData.intelligenceConfiguration = intelligenceConfiguration;
-
-      // Delete old data
-      liveConversationData.delete(conversationId);
-      console.log(`✅ Migration complete. Deleted old conversationId key.`);
-    }
+    ensureConversationData(dataKey, {
+      conversationId,
+      accountId,
+      intelligenceConfiguration,
+    });
 
     const conversationData = liveConversationData.get(dataKey);
 
@@ -797,11 +422,8 @@ app.post('/webhook/cintel-action', (req, res) => {
         );
 
         // Broadcast to SSE clients if we have a callSid
-        if (sessionId) {
-          console.log(
-            `      - ✅ Broadcasting to SSE clients for sessionId: ${sessionId}`,
-          );
-          broadcastToClients(sessionId, {
+        if (callSid) {
+          broadcastToClients(callSid, {
             type: 'operator-result',
             data: formattedResult,
           });
@@ -823,41 +445,28 @@ app.post('/webhook/cintel-action', (req, res) => {
 });
 
 /**
- * POST /api/link-conversation
- * Manually link a CINTEL conversationId to a callSid
+ * Initialize conversation data for a key if it doesn't already exist.
+ * If it does exist, fills in any missing (null/undefined) fields from extras.
  */
-app.post('/api/link-conversation', (req, res) => {
-  try {
-    const { conversationId, callSid } = req.body;
-
-    if (!conversationId || !callSid) {
-      return res.status(400).json({
-        error: 'Both conversationId and callSid are required',
-      });
-    }
-
-    conversationIdToCallSid.set(conversationId, callSid);
-    console.log(
-      `Linked conversationId ${conversationId} to callSid ${callSid}`,
-    );
-
-    // If there's existing data under conversationId, migrate it to callSid
-    if (liveConversationData.has(conversationId)) {
-      const data = liveConversationData.get(conversationId);
-      liveConversationData.set(callSid, data);
-      liveConversationData.delete(conversationId);
-      console.log(`Migrated data from conversationId to callSid`);
-    }
-
-    res.json({
-      success: true,
-      message: 'Conversation linked successfully',
+function ensureConversationData(key, extras = {}) {
+  if (!liveConversationData.has(key)) {
+    liveConversationData.set(key, {
+      transcript: [],
+      operatorResults: [],
+      startTime: new Date(),
+      ...extras,
     });
-  } catch (error) {
-    console.error('Error linking conversation:', error);
-    res.status(500).json({ error: 'Failed to link conversation' });
+    console.log(`📝 Created new conversation data for key: ${key}`);
+  } else {
+    const data = liveConversationData.get(key);
+    for (const [field, value] of Object.entries(extras)) {
+      if (data[field] == null && value != null) {
+        data[field] = value;
+      }
+    }
+    console.log(`📝 Found existing conversation data for key: ${key}`);
   }
-});
+}
 
 /**
  * Helper function to broadcast updates to SSE clients
@@ -897,7 +506,6 @@ server.listen(PORT, () => {
     'TWILIO_API_KEY',
     'TWILIO_API_SECRET',
     'TWILIO_FLEX_PHONE_NUMBER',
-    'OPENAI_API_KEY',
     'SERVER_URL',
   ];
 
