@@ -10,7 +10,7 @@ module.exports = (config, { isProd, isDev, isTest }) => {
     case 'Dev':
       envPath = '.env';
       break;
-    case 'FlexDemo':
+    case 'FlexUtility':
       envPath = '.env.production';
       break;
   }

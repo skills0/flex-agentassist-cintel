@@ -58,9 +58,10 @@ type TabType = 'transcript' | 'agent-view' | 'operator-log';
 // You will need to extract callSid or other identifiers from task as needed for SSE
 export default function CINTELPanel({ manager, task }: CINTELPanelProps) {
   const callSid = task?.attributes?.call_sid;
-  const conversationSid = task?.attributes?.conversationSid;
   const channel =
-    task?.attributes?.channelType == 'voice' ? 'voice' : 'digital';
+    task?.attributes?.channelType || task?.taskChannelUniqueName === 'voice'
+      ? 'voice'
+      : 'digital';
   const [activeTab, setActiveTab] = useState<TabType>('transcript');
   const [unreadCount, setUnreadCount] = useState(0);
   const previousCountRef = useRef(0);
@@ -75,17 +76,12 @@ export default function CINTELPanel({ manager, task }: CINTELPanelProps) {
   useEffect(() => {
     console.log('CINTELPanel: Using server URL:', serverUrl);
 
-    console.log(
-      'CINTELPanel: Found server URL in .env:',
-      process.env.REACT_APP_SERVERLESS_BASE_URL,
-    );
-
     console.log('Active task channel type:', channel);
   }, []);
 
   // SSE connection for transcript and operator results
   useEffect(() => {
-    if (!callSid && !conversationSid) return;
+    if (!callSid) return;
 
     // Clean up previous connection
     if (eventSourceRef.current) {
@@ -93,7 +89,7 @@ export default function CINTELPanel({ manager, task }: CINTELPanelProps) {
       eventSourceRef.current = null;
     }
 
-    const sessionId = channel === 'voice' ? callSid : conversationSid;
+    const sessionId = callSid;
 
     const eventSource = new EventSource(`${serverUrl}/api/stream/${sessionId}`);
 
@@ -136,7 +132,7 @@ export default function CINTELPanel({ manager, task }: CINTELPanelProps) {
     return () => {
       eventSource.close();
     };
-  }, [callSid, conversationSid, channel, serverUrl]);
+  }, [callSid, serverUrl]);
 
   // Track new operator results and update badge count
   useEffect(() => {
@@ -175,7 +171,7 @@ export default function CINTELPanel({ manager, task }: CINTELPanelProps) {
       }}
     >
       {/* Tab Navigation - Only show when there's an active task */}
-      {(callSid || conversationSid) && (
+      {callSid && (
         <div
           style={{
             display: 'flex',
@@ -311,7 +307,7 @@ export default function CINTELPanel({ manager, task }: CINTELPanelProps) {
       )}
 
       {/* Tab Content */}
-      {(callSid || conversationSid) && (
+      {callSid && (
         <div
           style={{
             padding: '16px',

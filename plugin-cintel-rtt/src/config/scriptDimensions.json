@@ -1,26 +1,26 @@
 [
   {
-    "key": "greeting",
+    "key": "Greeting",
     "label": "Greeting",
     "description": "Agent greets customer, states company name, and introduces themselves",
     "completed": false
   },
   {
-    "key": "identity_verification",
-    "label": "Identity Verification",
-    "description": "Agent verifies customer identity (last 4 digits of account)",
+    "key": "Verification",
+    "label": "Verification",
+    "description": "Agent verifies customer move date and to/from cities",
     "completed": false
   },
   {
-    "key": "resolution_steps",
-    "label": "Resolution Steps",
-    "description": "Agent explains what they will do to resolve the issue",
+    "key": "Move Details",
+    "label": "Move Details",
+    "description": "Agent collects details about the customer's move, including special items, international moves, customs, and insurance options",
     "completed": false
   },
   {
-    "key": "issue_resolution",
-    "label": "Issue Resolution",
-    "description": "Agent satisfactorily resolves the customer issue",
+    "key": "Confirmation",
+    "label": "Confirmation",
+    "description": "Agent summarizes next steps (preferred channel, video walkthrough)",
     "completed": false
   }
 ]

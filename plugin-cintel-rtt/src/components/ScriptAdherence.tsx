@@ -106,9 +106,9 @@ export default function ScriptAdherence({
         );
         const completed =
           !!category &&
-          category.criteria.length > 0 &&
-          category.criteria.every(
-            (c: { criteria_met: string }) => c.criteria_met === 'Succeeded',
+          category.criteria.some(
+            (c: { criteria_key: string; criteria_met: string }) =>
+              c.criteria_key === 'Action' && c.criteria_met === 'Succeeded',
           );
         return { ...dim, completed };
       });
